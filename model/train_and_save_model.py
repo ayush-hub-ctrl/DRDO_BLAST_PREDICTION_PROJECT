@@ -1,14 +1,12 @@
 """
-Train the final model and save all artifacts needed for the Streamlit app:
-  - trained XGBoost model
-  - StandardScaler (kept for consistency even though tree models don't need it,
-    in case you swap in the MLP later)
-  - LabelEncoder for damage categories
-  - list of feature columns in the exact order the model expects
-  - the raw P-I curve constants (so the app can draw the diagram)
+Train the final model (v2) and save all artifacts needed for the Streamlit app.
+Now includes explosive_type and charge_shape as model features, in addition to
+the original charge weight, standoff distance, structure type, and quality
+factor.
 """
 
 import json
+import os
 import numpy as np
 import pandas as pd
 import joblib
@@ -47,7 +45,9 @@ STRUCTURE_PI_CURVES = {
     },
 }
 
-import os
+EXPLOSIVE_TNT_EQUIVALENCE = {"TNT": 1.00, "RDX": 1.60, "C4": 1.37, "ANFO": 0.82}
+CHARGE_SHAPE_FACTOR = {"spherical": 1.00, "hemispherical": 2.00, "cylindrical": 1.30}
+
 os.makedirs("../app/artifacts", exist_ok=True)
 
 df = pd.read_csv("../data/blast_damage_dataset.csv")
@@ -57,12 +57,19 @@ for col in ["charge_weight_kg", "standoff_distance_m", "peak_overpressure_kpa", 
     df_model[f"log_{col}"] = np.log1p(df_model[col])
 
 structure_types = sorted(df_model["structure_type"].unique().tolist())
+explosive_types = sorted(df_model["explosive_type"].unique().tolist())
+charge_shapes = sorted(df_model["charge_shape"].unique().tolist())
+
 df_model = pd.get_dummies(df_model, columns=["structure_type"], prefix="struct")
+df_model = pd.get_dummies(df_model, columns=["explosive_type"], prefix="explosive")
+df_model = pd.get_dummies(df_model, columns=["charge_shape"], prefix="shape")
 
 feature_cols = [
     "log_charge_weight_kg", "log_standoff_distance_m", "scaled_distance_Z",
     "log_peak_overpressure_kpa", "log_impulse_kpa_ms", "quality_factor",
-] + [f"struct_{s}" for s in structure_types]
+] + [f"struct_{s}" for s in structure_types] \
+  + [f"explosive_{e}" for e in explosive_types] \
+  + [f"shape_{s}" for s in charge_shapes]
 
 X = df_model[feature_cols]
 
@@ -92,29 +99,40 @@ model = xgb.XGBClassifier(
 model.fit(X_train, y_train, sample_weight=sample_weights)
 
 preds = model.predict(X_test)
-print("Test accuracy:", accuracy_score(y_test, preds))
-print("Test macro-F1:", f1_score(y_test, preds, average="macro"))
+test_accuracy = accuracy_score(y_test, preds)
+test_macro_f1 = f1_score(y_test, preds, average="macro")
+print("Test accuracy:", test_accuracy)
+print("Test macro-F1:", test_macro_f1)
 print(classification_report(y_test, preds, target_names=damage_order))
 
-# Fit a scaler on the full feature set too (kept for parity / future MLP swap-in)
 scaler = StandardScaler()
 scaler.fit(X)
 
-# --- Save all artifacts ---
 joblib.dump(model, "../app/artifacts/xgb_model.joblib")
 joblib.dump(scaler, "../app/artifacts/scaler.joblib")
 joblib.dump(label_encoder, "../app/artifacts/label_encoder.joblib")
 
 with open("../app/artifacts/feature_cols.json", "w") as f:
     json.dump(feature_cols, f)
-
 with open("../app/artifacts/structure_types.json", "w") as f:
     json.dump(structure_types, f)
-
+with open("../app/artifacts/explosive_types.json", "w") as f:
+    json.dump(explosive_types, f)
+with open("../app/artifacts/charge_shapes.json", "w") as f:
+    json.dump(charge_shapes, f)
 with open("../app/artifacts/pi_curves.json", "w") as f:
     json.dump(STRUCTURE_PI_CURVES, f)
-
+with open("../app/artifacts/explosive_tnt_equivalence.json", "w") as f:
+    json.dump(EXPLOSIVE_TNT_EQUIVALENCE, f)
+with open("../app/artifacts/charge_shape_factor.json", "w") as f:
+    json.dump(CHARGE_SHAPE_FACTOR, f)
 with open("../app/artifacts/damage_order.json", "w") as f:
     json.dump(damage_order, f)
+with open("../app/artifacts/model_metadata.json", "w") as f:
+    json.dump({
+        "strategy": "class-weighted XGBoost (v2: + explosive type + charge shape)",
+        "test_accuracy": test_accuracy,
+        "test_macro_f1": test_macro_f1,
+    }, f, indent=2)
 
 print("\nAll artifacts saved to ../app/artifacts/")
