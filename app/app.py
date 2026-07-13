@@ -22,20 +22,24 @@ st.set_page_config(page_title="Blast Damage Predictor", page_icon="💥", layout
 # Load artifacts (cached so they only load once per session)
 # ---------------------------------------------------------------------------
 
+import os
+
+ARTIFACTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "artifacts")
+
 @st.cache_resource
 def load_artifacts():
-    model = joblib.load("artifacts/xgb_model.joblib")
-    label_encoder = joblib.load("artifacts/label_encoder.joblib")
-    with open("artifacts/feature_cols.json") as f:
+    model = joblib.load(os.path.join(ARTIFACTS_DIR, "xgb_model.joblib"))
+    label_encoder = joblib.load(os.path.join(ARTIFACTS_DIR, "label_encoder.joblib"))
+    with open(os.path.join(ARTIFACTS_DIR, "feature_cols.json")) as f:
         feature_cols = json.load(f)
-    with open("artifacts/structure_types.json") as f:
+    with open(os.path.join(ARTIFACTS_DIR, "structure_types.json")) as f:
         structure_types = json.load(f)
-    with open("artifacts/pi_curves.json") as f:
+    with open(os.path.join(ARTIFACTS_DIR, "pi_curves.json")) as f:
         pi_curves = json.load(f)
-    with open("artifacts/damage_order.json") as f:
+    with open(os.path.join(ARTIFACTS_DIR, "damage_order.json")) as f:
         damage_order = json.load(f)
     try:
-        with open("artifacts/model_metadata.json") as f:
+        with open(os.path.join(ARTIFACTS_DIR, "model_metadata.json")) as f:
             model_metadata = json.load(f)
     except FileNotFoundError:
         model_metadata = {"strategy": "class-weighted XGBoost", "test_accuracy": None, "test_macro_f1": None}
