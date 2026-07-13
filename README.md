@@ -1,5 +1,15 @@
 # Blast Structural Damage Predictor
 
+🔗 **Live app:** [your-app-name.streamlit.app](https://your-app-name.streamlit.app)
+
+A machine learning project predicting structural damage severity from blast
+loading parameters...
+
+
+
+
+# Blast Structural Damage Predictor
+
 A machine learning project predicting structural damage severity from blast
 loading parameters — a companion project to **HazardScope**, extending it
 from raw overpressure calculation into a learned damage-classification
