@@ -1,0 +1,350 @@
+"""
+Blast Structural Damage Predictor — Streamlit App
+===================================================
+Companion tool to HazardScope: given a charge weight, standoff distance, and
+structure type, predicts likely structural damage category and shows where
+the scenario falls on a Pressure-Impulse (P-I) diagram.
+
+Run locally:
+    streamlit run app.py
+"""
+
+import json
+import numpy as np
+import pandas as pd
+import joblib
+import streamlit as st
+import plotly.graph_objects as go
+
+st.set_page_config(page_title="Blast Damage Predictor", page_icon="💥", layout="wide")
+
+# ---------------------------------------------------------------------------
+# Load artifacts (cached so they only load once per session)
+# ---------------------------------------------------------------------------
+
+@st.cache_resource
+def load_artifacts():
+    model = joblib.load("artifacts/xgb_model.joblib")
+    label_encoder = joblib.load("artifacts/label_encoder.joblib")
+    with open("artifacts/feature_cols.json") as f:
+        feature_cols = json.load(f)
+    with open("artifacts/structure_types.json") as f:
+        structure_types = json.load(f)
+    with open("artifacts/pi_curves.json") as f:
+        pi_curves = json.load(f)
+    with open("artifacts/damage_order.json") as f:
+        damage_order = json.load(f)
+    try:
+        with open("artifacts/model_metadata.json") as f:
+            model_metadata = json.load(f)
+    except FileNotFoundError:
+        model_metadata = {"strategy": "class-weighted XGBoost", "test_accuracy": None, "test_macro_f1": None}
+    return model, label_encoder, feature_cols, structure_types, pi_curves, damage_order, model_metadata
+
+
+model, label_encoder, feature_cols, structure_types, pi_curves, damage_order, model_metadata = load_artifacts()
+
+DAMAGE_COLORS = {
+    "none": "#2ecc71",
+    "minor": "#f1c40f",
+    "moderate": "#e67e22",
+    "severe": "#e74c3c",
+    "collapse": "#7d3c98",
+}
+
+STRUCTURE_LABELS = {
+    "glazing_window": "Glazing / Window",
+    "masonry_wall": "Masonry Wall",
+    "rc_wall": "Reinforced Concrete Wall",
+    "steel_frame": "Steel Frame",
+}
+
+
+# ---------------------------------------------------------------------------
+# Physics functions (same as the dataset generator, kept in sync)
+# ---------------------------------------------------------------------------
+
+def scaled_distance(R_m, W_kg):
+    return R_m / (W_kg ** (1 / 3))
+
+
+def peak_overpressure_kpa(Z):
+    Z = np.clip(Z, 0.2, 40)
+    logZ = np.log(Z)
+    log_P = 7.2 - 1.85 * logZ - 0.10 * logZ ** 2 + 0.06 * logZ ** 3
+    return np.exp(log_P)
+
+
+def impulse_kpa_ms(Z, W_kg):
+    Z = np.clip(Z, 0.2, 40)
+    logZ = np.log(Z)
+    log_Ibar = 2.65 - 0.95 * logZ + 0.02 * logZ ** 2
+    I_bar = np.exp(log_Ibar)
+    return I_bar * (W_kg ** (1 / 3))
+
+
+# ---------------------------------------------------------------------------
+# Sidebar — inputs (shared across tabs)
+# ---------------------------------------------------------------------------
+
+st.sidebar.title("💥 Scenario Inputs")
+
+charge_weight = st.sidebar.slider(
+    "Charge weight (kg TNT equivalent)", min_value=0.5, max_value=2000.0,
+    value=50.0, step=0.5,
+)
+standoff_distance = st.sidebar.slider(
+    "Standoff distance (m)", min_value=1.0, max_value=200.0,
+    value=20.0, step=0.5,
+)
+structure_type = st.sidebar.selectbox(
+    "Structure type", options=structure_types,
+    format_func=lambda s: STRUCTURE_LABELS.get(s, s),
+)
+quality_factor = st.sidebar.slider(
+    "Construction quality factor", min_value=0.7, max_value=1.3, value=1.0, step=0.01,
+    help="1.0 = typical/nominal construction quality. <1.0 = weaker than typical "
+         "(aging, poor materials). >1.0 = stronger than typical (reinforced, well-maintained).",
+)
+
+st.sidebar.markdown("---")
+st.sidebar.caption(
+    "Synthetic model trained on Kingery-Bulmash style overpressure/impulse "
+    "estimates combined with Pressure-Impulse damage curves. For research and "
+    "portfolio purposes — not a substitute for formal structural analysis."
+)
+
+# ---------------------------------------------------------------------------
+# Main title
+# ---------------------------------------------------------------------------
+
+st.title("Blast Structural Damage Predictor")
+st.markdown(
+    "Companion tool to **HazardScope** — predicts likely structural damage "
+    "category from blast parameters using a trained XGBoost classifier."
+)
+
+
+# ---------------------------------------------------------------------------
+# Predictor tab renderer
+# ---------------------------------------------------------------------------
+
+def render_predictor_tab():
+    Z = scaled_distance(standoff_distance, charge_weight)
+    P = peak_overpressure_kpa(Z) * quality_factor ** -0.5
+    I = impulse_kpa_ms(Z, charge_weight) * quality_factor ** -0.5
+
+    row = {
+        "log_charge_weight_kg": np.log1p(charge_weight),
+        "log_standoff_distance_m": np.log1p(standoff_distance),
+        "scaled_distance_Z": Z,
+        "log_peak_overpressure_kpa": np.log1p(P),
+        "log_impulse_kpa_ms": np.log1p(I),
+        "quality_factor": quality_factor,
+    }
+    for s in structure_types:
+        row[f"struct_{s}"] = 1 if s == structure_type else 0
+
+    X_input = pd.DataFrame([row])[feature_cols]
+
+    pred_encoded = model.predict(X_input)[0]
+    pred_label = label_encoder.inverse_transform([pred_encoded])[0]
+    pred_proba = model.predict_proba(X_input)[0]
+
+    col1, col2 = st.columns([1, 1.4])
+
+    with col1:
+        st.subheader("Predicted Damage")
+        color = DAMAGE_COLORS.get(pred_label, "#333333")
+        st.markdown(
+            f"<div style='padding:24px; border-radius:12px; background-color:{color}20; "
+            f"border:2px solid {color}; text-align:center;'>"
+            f"<span style='font-size:14px; color:#666;'>DAMAGE CATEGORY</span><br>"
+            f"<span style='font-size:36px; font-weight:700; color:{color};'>{pred_label.upper()}</span>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+        st.markdown("#### Scenario Physics")
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Scaled Distance Z", f"{Z:.2f} m/kg¹ᐟ³")
+        m2.metric("Peak Overpressure", f"{P:.1f} kPa")
+        m3.metric("Impulse", f"{I:.1f} kPa·ms")
+
+        st.markdown("#### Prediction Confidence")
+        proba_df = pd.DataFrame({
+            "Damage Category": [label_encoder.classes_[i] for i in range(len(pred_proba))],
+            "Probability": pred_proba,
+        })
+        proba_df["Damage Category"] = pd.Categorical(
+            proba_df["Damage Category"], categories=damage_order, ordered=True
+        )
+        proba_df = proba_df.sort_values("Damage Category")
+
+        fig_bar = go.Figure(go.Bar(
+            x=proba_df["Probability"],
+            y=proba_df["Damage Category"],
+            orientation="h",
+            marker_color=[DAMAGE_COLORS.get(d, "#333") for d in proba_df["Damage Category"]],
+            text=[f"{p:.0%}" for p in proba_df["Probability"]],
+            textposition="outside",
+        ))
+        fig_bar.update_layout(
+            height=260, margin=dict(l=10, r=10, t=10, b=10),
+            xaxis=dict(range=[0, 1], title="Probability"),
+            yaxis=dict(title=""),
+        )
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+    with col2:
+        st.subheader("Pressure-Impulse Diagram")
+        st.caption(f"Scenario plotted against {STRUCTURE_LABELS.get(structure_type, structure_type)} damage thresholds")
+
+        curves = pi_curves[structure_type]
+        fig = go.Figure()
+
+        I_range = np.logspace(-0.5, 3.5, 300)
+        for level in ["minor", "moderate", "severe", "collapse"]:
+            P0, I0, A = curves[level]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                P_curve = P0 + A / np.maximum(I_range - I0, 1e-6)
+            mask = (I_range > I0) & (P_curve > P0) & (P_curve < 1000)
+            fig.add_trace(go.Scatter(
+                x=I_range[mask], y=P_curve[mask], mode="lines",
+                name=f"{level} threshold",
+                line=dict(color=DAMAGE_COLORS[level], width=2, dash="dot"),
+            ))
+
+        fig.add_trace(go.Scatter(
+            x=[I], y=[P], mode="markers",
+            name="Your scenario",
+            marker=dict(size=16, color=DAMAGE_COLORS.get(pred_label, "black"),
+                        line=dict(width=2, color="black"), symbol="star"),
+        ))
+
+        fig.update_layout(
+            xaxis=dict(type="log", title="Impulse (kPa·ms)"),
+            yaxis=dict(type="log", title="Peak Overpressure (kPa)"),
+            height=480, margin=dict(l=10, r=10, t=30, b=10),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("---")
+    acc = model_metadata.get("test_accuracy")
+    f1 = model_metadata.get("test_macro_f1")
+    acc_str = f"{acc:.1%}" if acc is not None else "N/A"
+    f1_str = f"{f1:.3f}" if f1 is not None else "N/A"
+    with st.expander("ℹ️ About this model"):
+        st.markdown(
+            f"""
+            - Trained on a **synthetic dataset** (6000 samples) generated from
+              Kingery-Bulmash style empirical overpressure/impulse formulas combined
+              with Pressure-Impulse (P-I) damage curves for 4 structure types.
+            - Model: **XGBoost classifier** ({model_metadata.get('strategy', 'class-weighted XGBoost')}),
+              {acc_str} test accuracy, {f1_str} macro-F1.
+            - This is a portfolio/research project, not a validated tool for real
+              safety-critical decisions. For real blast-resistant design, refer to
+              UFC 3-340-02 and consult a qualified structural engineer.
+            """
+        )
+
+
+# ---------------------------------------------------------------------------
+# Methodology tab renderer
+# ---------------------------------------------------------------------------
+
+def render_methodology_tab():
+    st.markdown(
+        """
+        ### How this project was built
+
+        This tool follows a physics-informed synthetic data pipeline, then
+        layers machine learning on top of it — a natural extension of
+        **HazardScope**, which computes blast overpressure directly from
+        empirical formulas without any learned model.
+
+        #### 1. Synthetic data generation
+        There's no large public dataset of labeled real-world blast damage
+        (understandably — that data is either classified, rare, or
+        extremely expensive to collect). So the training data here is
+        generated synthetically:
+
+        - **Physics inputs**: charge weight (0.5–2000 kg TNT equivalent) and
+          standoff distance (1–200 m) are sampled log-uniformly, then
+          converted to **scaled distance** `Z = R / W^(1/3)` (the standard
+          Hopkinson–Cranz cube-root scaling law used throughout blast
+          engineering).
+        - **Overpressure & impulse**: peak overpressure and impulse are
+          estimated from `Z` using simplified empirical curve fits in the
+          style of the **Kingery-Bulmash** relationships — the same family
+          of equations HazardScope uses directly.
+        - **Damage labeling**: each of 4 structure types (glazing, masonry,
+          reinforced concrete, steel frame) has 4 nested
+          **Pressure-Impulse (P-I) curves** — one per damage level (minor,
+          moderate, severe, collapse). A P-I curve follows the classic form
+          `(P - P0)(I - I0) = A`, where `P0`/`I0` are asymptotes and `A` is
+          a constant tied to structural stiffness and damage threshold. A
+          scenario is labeled with the highest damage level whose curve it
+          falls beyond.
+        - **Noise**: a construction-quality factor and measurement noise are
+          added so the dataset isn't a perfect deterministic lookup table.
+
+        #### 2. Exploratory Data Analysis
+        Before modeling, the EDA notebook checks class balance, feature
+        distributions, and — most importantly — a physics sanity check: does
+        damage severity actually increase as scaled distance decreases? It
+        does, confirming the labeling logic behaves as intended.
+
+        #### 3. Model training & comparison
+        Three model families were compared on a stratified 80/20 split:
+        Random Forest, XGBoost, and a small MLP neural net. **XGBoost** was
+        selected as the production model for its balance of accuracy,
+        training speed, and stability on tabular data.
+
+        #### 4. Tuning experiment: SMOTE + Optuna
+        Since `minor`/`moderate`/`severe` classes are naturally rarer than
+        `none`/`collapse`, a follow-up experiment tried **SMOTE**
+        oversampling combined with **Optuna** hyperparameter search, evaluated
+        with 3-fold stratified cross-validation on macro-F1.
+
+        **Result: it didn't win.** The tuned SMOTE model scored slightly
+        *lower* on the held-out test set (0.912 macro-F1) than the plain
+        class-weighted baseline (0.914 macro-F1), despite much higher
+        cross-validation scores during the search itself. This is a
+        legitimate and common finding — SMOTE's synthetic interpolated
+        points can make a CV fold look easier than the real, untouched test
+        set, especially with rare classes and relatively few real examples
+        of each. The simpler class-weighted approach generalized better, so
+        it's what actually ships in this app. Worth stating plainly rather
+        than reporting only the tuning run's optimistic numbers.
+
+        #### 5. Deployment
+        The final model, scaler, and label encoder are serialized with
+        `joblib` and loaded into this Streamlit app, which recomputes the
+        blast physics live from user inputs and calls the model for a
+        prediction — no retraining needed at request time.
+
+        ---
+
+        **Honest limitations:**
+        - The entire dataset is synthetic — no real blast-test measurements
+          were used to validate the P-I curve constants, which are
+          representative approximations, not exact reference-table values.
+        - The Kingery-Bulmash fit used is a simplified polynomial
+          approximation, not the full tabulated TM5-855-1 / UFC 3-340-02
+          curves.
+        - This should be read as a demonstration of an ML pipeline applied
+          to a physically-grounded problem, not a validated engineering
+          tool.
+        """
+    )
+
+
+tab_predict, tab_methodology = st.tabs(["🎯 Predictor", "📚 Methodology"])
+
+with tab_predict:
+    render_predictor_tab()
+
+with tab_methodology:
+    render_methodology_tab()
