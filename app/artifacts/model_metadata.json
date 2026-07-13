@@ -1,10 +1,5 @@
 {
-  "strategy": "class-weighted XGBoost (no SMOTE)",
-  "test_accuracy": 0.96,
-  "test_macro_f1": 0.91451222904943,
-  "best_params": {
-    "n_estimators": 300,
-    "max_depth": 6,
-    "learning_rate": 0.1
-  }
+  "strategy": "class-weighted XGBoost (v2: + explosive type + charge shape)",
+  "test_accuracy": 0.969375,
+  "test_macro_f1": 0.9357030757412739
 }
