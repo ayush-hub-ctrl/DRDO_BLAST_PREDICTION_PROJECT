@@ -1,11 +1,9 @@
 # Blast Structural Damage Predictor
 
-🔗 **Live app:** [your-app-name.streamlit.app](https://your-app-name.streamlit.app)
+🔗 **Live app:** (https://drdoblastpredictionproject-sc5mgpbadsgvgxp8zs7k6w.streamlit.app/)
 
 A machine learning project predicting structural damage severity from blast
 loading parameters...
-
-
 
 
 # Blast Structural Damage Predictor
