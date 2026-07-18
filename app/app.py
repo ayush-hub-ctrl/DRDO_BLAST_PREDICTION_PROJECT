@@ -16,7 +16,7 @@ import joblib
 import streamlit as st
 import plotly.graph_objects as go
 
-st.set_page_config(page_title="Blast Damage Predictor", page_icon="💥", layout="wide")
+st.set_page_config(page_title="Blast Damage Predictor", page_icon=None, layout="wide")
 
 ARTIFACTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "artifacts")
 
@@ -95,7 +95,7 @@ def impulse_kpa_ms(Z, W_eff_kg):
 # Sidebar — inputs
 # ---------------------------------------------------------------------------
 
-st.sidebar.title("💥 Scenario Inputs")
+st.sidebar.title("Scenario Inputs")
 
 charge_weight = st.sidebar.slider(
     "Actual charge weight (kg)", min_value=0.5, max_value=2000.0, value=50.0, step=0.5,
@@ -254,7 +254,7 @@ def render_predictor_tab():
     f1 = model_metadata.get("test_macro_f1")
     acc_str = f"{acc:.1%}" if acc is not None else "N/A"
     f1_str = f"{f1:.3f}" if f1 is not None else "N/A"
-    with st.expander("ℹ️ About this model"):
+    with st.expander("About this model"):
         st.markdown(
             f"""
             - Trained on a **synthetic dataset** (8000 samples) generated from
@@ -340,7 +340,7 @@ def render_methodology_tab():
     )
 
 
-tab_predict, tab_methodology = st.tabs(["🎯 Predictor", "📚 Methodology"])
+tab_predict, tab_methodology = st.tabs(["Predictor", "Methodology"])
 
 with tab_predict:
     render_predictor_tab()
